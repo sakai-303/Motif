@@ -4,15 +4,14 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI } from "@google/genai";
 import { Search, Music, Play, Info, LogIn, ExternalLink, Loader2, Disc, Layers, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import axios from 'axios';
 import { cn } from './lib/utils';
+import { createLLMProvider } from './lib/llm';
 
-// Initialize Gemini
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+const llm = createLLMProvider();
 
 interface SpotifyTokens {
   access_token: string;
@@ -167,15 +166,9 @@ export default function App() {
         Focus on the "actual sound" - what should the listener listen for? Be specific about instruments, production techniques, and vocal styles.
       `;
 
-      const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-        },
-      });
+      const text = await llm.generateText(prompt, { jsonMode: true });
 
-      const data = JSON.parse(result.text || '{}');
+      const data = JSON.parse(text || '{}');
       setCommentary(data);
     } catch (err) {
       console.error(err);
