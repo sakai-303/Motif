@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Search, Music, Play, Info, LogIn, ExternalLink, Loader2, Disc, Layers, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -44,6 +44,44 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [spotifyTokens, setSpotifyTokens] = useState<SpotifyTokens | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const autoSearchQueryRef = useRef<string | null>(null);
+
+  const getSearchQueryFromUrl = useCallback(() => {
+    const query = new URLSearchParams(window.location.search).get('q');
+    return query?.trim() || '';
+  }, []);
+
+  const updateSearchQueryInUrl = useCallback((query: string) => {
+    const params = new URLSearchParams(window.location.search);
+    const trimmedQuery = query.trim();
+
+    if (trimmedQuery) {
+      params.set('q', trimmedQuery);
+    } else {
+      params.delete('q');
+    }
+
+    const nextSearch = params.toString();
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+    window.history.pushState(null, '', nextUrl);
+  }, []);
+
+  useEffect(() => {
+    const initialQuery = getSearchQueryFromUrl();
+    setSearchQuery(initialQuery);
+    autoSearchQueryRef.current = initialQuery || null;
+  }, [getSearchQueryFromUrl]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const queryFromUrl = getSearchQueryFromUrl();
+      setSearchQuery(queryFromUrl);
+      autoSearchQueryRef.current = queryFromUrl || null;
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [getSearchQueryFromUrl]);
 
   // Load tokens from localStorage
   useEffect(() => {
@@ -76,39 +114,59 @@ export default function App() {
     }
   };
 
+  const performArtistSearch = useCallback(
+    async (query: string, options?: { updateUrl?: boolean }) => {
+      const trimmedQuery = query.trim();
+      if (!trimmedQuery || !spotifyTokens) return;
+
+      if (options?.updateUrl !== false) {
+        updateSearchQueryInUrl(trimmedQuery);
+      }
+
+      setIsSearching(true);
+      setError(null);
+      setArtist(null);
+      setCommentary(null);
+
+      try {
+        const response = await axios.get(`https://api.spotify.com/v1/search`, {
+          params: { q: trimmedQuery, type: 'artist', limit: 1 },
+          headers: { Authorization: `Bearer ${spotifyTokens.access_token}` },
+        });
+
+        const artistData = response.data.artists.items[0];
+        if (artistData) {
+          setArtist(artistData);
+          generateCommentary(artistData);
+        } else {
+          setError('アーティストが見つかりませんでした');
+        }
+      } catch (err: any) {
+        if (err.response?.status === 401) {
+          setError('Spotifyのセッションが切れました。再度ログインしてください。');
+          setSpotifyTokens(null);
+          localStorage.removeItem('spotify_tokens');
+        } else {
+          setError('アーティストの検索に失敗しました');
+        }
+      } finally {
+        setIsSearching(false);
+      }
+    },
+    [spotifyTokens, updateSearchQueryInUrl]
+  );
+
+  useEffect(() => {
+    const queryFromUrl = autoSearchQueryRef.current;
+    if (!queryFromUrl || !spotifyTokens) return;
+
+    autoSearchQueryRef.current = null;
+    void performArtistSearch(queryFromUrl, { updateUrl: false });
+  }, [spotifyTokens, performArtistSearch]);
+
   const searchArtist = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim() || !spotifyTokens) return;
-
-    setIsSearching(true);
-    setError(null);
-    setArtist(null);
-    setCommentary(null);
-
-    try {
-      const response = await axios.get(`https://api.spotify.com/v1/search`, {
-        params: { q: searchQuery, type: 'artist', limit: 1 },
-        headers: { Authorization: `Bearer ${spotifyTokens.access_token}` },
-      });
-
-      const artistData = response.data.artists.items[0];
-      if (artistData) {
-        setArtist(artistData);
-        generateCommentary(artistData);
-      } else {
-        setError('アーティストが見つかりませんでした');
-      }
-    } catch (err: any) {
-      if (err.response?.status === 401) {
-        setError('Spotifyのセッションが切れました。再度ログインしてください。');
-        setSpotifyTokens(null);
-        localStorage.removeItem('spotify_tokens');
-      } else {
-        setError('アーティストの検索に失敗しました');
-      }
-    } finally {
-      setIsSearching(false);
-    }
+    await performArtistSearch(searchQuery);
   };
 
   const [activeTrackId, setActiveTrackId] = useState<string | null>(null);
@@ -204,7 +262,10 @@ export default function App() {
                 type="text" 
                 placeholder="アーティストを検索..." 
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  autoSearchQueryRef.current = null;
+                  setSearchQuery(e.target.value);
+                }}
                 className="bg-white/10 border border-white/20 rounded-full py-2 px-4 pl-10 focus:outline-none focus:ring-2 focus:ring-orange-500 w-48 md:w-64 transition-all group-hover:w-80"
               />
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/50" />
