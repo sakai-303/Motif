@@ -61,10 +61,7 @@ cp .env.example .env
 | `SPOTIFY_CLIENT_ID` | Spotify アプリのクライアント ID |
 | `SPOTIFY_CLIENT_SECRET` | Spotify アプリのクライアントシークレット |
 | `GEMINI_API_KEY` | Google Gemini API キー |
-| `YOUTUBE_API_KEY` | YouTube Data API v3 キー |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis の REST URL |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis の REST トークン |
-| `APP_URL` | アプリの公開 URL（ローカルでは `http://localhost:3000`） |
+| `APP_URL` | アプリの公開 URL（ローカルでは `http://127.0.0.1:3000`） |
 
 Spotify Developer Dashboard の「Redirect URIs」に `{APP_URL}/api/auth/spotify/callback` を追加してください。
 
