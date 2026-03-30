@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Music, Play, Info, LogIn, ExternalLink, Loader2, Disc, Layers, Sparkles } from 'lucide-react';
+import { Search, Music, Play, Info, LogIn, ExternalLink, Loader2, Disc, Layers, Sparkles, Volume2, VolumeX } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import axios from 'axios';
@@ -112,6 +112,68 @@ export default function App() {
   };
 
   const [activeTrackId, setActiveTrackId] = useState<string | null>(null);
+  const [volume, setVolume] = useState(1);
+
+  const embedContainerRef = useRef<HTMLDivElement>(null);
+  const controllerRef = useRef<any>(null);
+  const spotifyApiRef = useRef<any>(null);
+
+  // Load Spotify iFrame API
+  useEffect(() => {
+    (window as any).onSpotifyIframeApiReady = (IFrameAPI: any) => {
+      spotifyApiRef.current = IFrameAPI;
+    };
+    const script = document.createElement('script');
+    script.src = 'https://open.spotify.com/embed/iframe-api/v1';
+    script.async = true;
+    document.head.appendChild(script);
+  }, []);
+
+  // Create/recreate embed controller when artist changes
+  useEffect(() => {
+    if (!artist) return;
+
+    const createController = () => {
+      if (!embedContainerRef.current || !spotifyApiRef.current) return;
+      embedContainerRef.current.innerHTML = '';
+      controllerRef.current = null;
+      spotifyApiRef.current.createController(
+        embedContainerRef.current,
+        { uri: `spotify:artist:${artist.id}`, width: '100%', height: 380 },
+        (EmbedController: any) => {
+          controllerRef.current = EmbedController;
+          EmbedController.setVolume(volume);
+        }
+      );
+    };
+
+    if (spotifyApiRef.current) {
+      createController();
+    } else {
+      const interval = setInterval(() => {
+        if (spotifyApiRef.current) {
+          clearInterval(interval);
+          createController();
+        }
+      }, 100);
+      return () => clearInterval(interval);
+    }
+  }, [artist?.id]);
+
+  // Load track URI when activeTrackId changes
+  useEffect(() => {
+    if (!controllerRef.current || !artist) return;
+    const uri = activeTrackId
+      ? `spotify:track:${activeTrackId}`
+      : `spotify:artist:${artist.id}`;
+    controllerRef.current.loadUri(uri);
+  }, [activeTrackId]);
+
+  // Sync volume to embed controller
+  useEffect(() => {
+    if (!controllerRef.current) return;
+    controllerRef.current.setVolume(volume);
+  }, [volume]);
 
   // ... (existing useEffects)
 
@@ -360,16 +422,28 @@ export default function App() {
                 )}
 
                 <div className="space-y-4" id="spotify-player">
-                  <h3 className="text-xs uppercase tracking-[0.3em] text-white/40 font-bold">聴いて、確かめる</h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs uppercase tracking-[0.3em] text-white/40 font-bold">聴いて、確かめる</h3>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setVolume(v => v === 0 ? 1 : 0)}
+                        className="text-white/40 hover:text-white/70 transition-colors"
+                      >
+                        {volume === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                      </button>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={volume}
+                        onChange={(e) => setVolume(parseFloat(e.target.value))}
+                        className="volume-slider w-24 h-1 cursor-pointer"
+                      />
+                    </div>
+                  </div>
                   <div className="rounded-3xl overflow-hidden border border-white/10 bg-black shadow-2xl">
-                    <iframe 
-                      src={`https://open.spotify.com/embed/${activeTrackId ? 'track/' + activeTrackId : 'artist/' + artist.id}?utm_source=generator&theme=0`} 
-                      width="100%" 
-                      height="380" 
-                      frameBorder="0" 
-                      allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" 
-                      loading="lazy"
-                    />
+                    <div ref={embedContainerRef} />
                   </div>
                 </div>
               </div>
