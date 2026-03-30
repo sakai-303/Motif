@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@layer base {
+  .prose h1, .prose h2, .prose h3 {
+    @apply font-black uppercase tracking-tighter mt-8 mb-4;
+  }
+  .prose p {
+    @apply mb-4 leading-relaxed;
+  }
+  .prose ul {
+    @apply list-disc pl-6 mb-4;
+  }
+  .prose li {
+    @apply mb-2;
+  }
+  .prose strong {
+    @apply text-orange-500 font-bold;
+  }
+}
+
+body {
+  @apply bg-[#0a0a0a] text-white;
+  transition: background-color 0.5s ease;
+}

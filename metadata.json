@@ -1,0 +1,5 @@
+{
+  "name": "Sonic Analyst",
+  "description": "お気に入りのアーティストの音楽性をAIが深く解説。Spotifyと連携して、実際の音を聴きながら理解を深める音楽分析ツール。",
+  "requestFramePermissions": []
+}

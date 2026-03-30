@@ -1,0 +1,415 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useRef } from 'react';
+import { GoogleGenAI } from "@google/genai";
+import { Search, Music, Play, Info, LogIn, ExternalLink, Loader2, Disc, Layers, Sparkles } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import ReactMarkdown from 'react-markdown';
+import axios from 'axios';
+import { cn } from './lib/utils';
+
+// Initialize Gemini
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+
+interface SpotifyTokens {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+}
+
+interface ArtistInfo {
+  id: string;
+  name: string;
+  images: { url: string }[];
+  genres: string[];
+}
+
+interface Commentary {
+  summary: string;
+  keyTraits: {
+    title: string;
+    description: string;
+    exampleTrack?: string;
+  }[];
+  deepDive: string;
+}
+
+export default function App() {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const [artist, setArtist] = useState<ArtistInfo | null>(null);
+  const [commentary, setCommentary] = useState<Commentary | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [spotifyTokens, setSpotifyTokens] = useState<SpotifyTokens | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load tokens from localStorage
+  useEffect(() => {
+    const savedTokens = localStorage.getItem('spotify_tokens');
+    if (savedTokens) {
+      setSpotifyTokens(JSON.parse(savedTokens));
+    }
+  }, []);
+
+  // Listen for OAuth success message
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'SPOTIFY_AUTH_SUCCESS') {
+        const tokens = event.data.tokens;
+        setSpotifyTokens(tokens);
+        localStorage.setItem('spotify_tokens', JSON.stringify(tokens));
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  const handleSpotifyLogin = async () => {
+    try {
+      const response = await fetch('/api/auth/spotify/url');
+      const { url } = await response.json();
+      window.open(url, 'spotify_login', 'width=600,height=700');
+    } catch (err) {
+      setError('Spotifyログインの開始に失敗しました');
+    }
+  };
+
+  const searchArtist = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim() || !spotifyTokens) return;
+
+    setIsSearching(true);
+    setError(null);
+    setArtist(null);
+    setCommentary(null);
+
+    try {
+      const response = await axios.get(`https://api.spotify.com/v1/search`, {
+        params: { q: searchQuery, type: 'artist', limit: 1 },
+        headers: { Authorization: `Bearer ${spotifyTokens.access_token}` },
+      });
+
+      const artistData = response.data.artists.items[0];
+      if (artistData) {
+        setArtist(artistData);
+        generateCommentary(artistData);
+      } else {
+        setError('アーティストが見つかりませんでした');
+      }
+    } catch (err: any) {
+      if (err.response?.status === 401) {
+        setError('Spotifyのセッションが切れました。再度ログインしてください。');
+        setSpotifyTokens(null);
+        localStorage.removeItem('spotify_tokens');
+      } else {
+        setError('アーティストの検索に失敗しました');
+      }
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const [activeTrackId, setActiveTrackId] = useState<string | null>(null);
+
+  // ... (existing useEffects)
+
+  const playTrack = async (trackName: string) => {
+    if (!spotifyTokens || !artist) return;
+    
+    try {
+      const response = await axios.get(`https://api.spotify.com/v1/search`, {
+        params: { q: `track:${trackName} artist:${artist.name}`, type: 'track', limit: 1 },
+        headers: { Authorization: `Bearer ${spotifyTokens.access_token}` },
+      });
+
+      const track = response.data.tracks.items[0];
+      if (track) {
+        setActiveTrackId(track.id);
+        // Scroll to player
+        const playerElement = document.getElementById('spotify-player');
+        playerElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        setError('曲が見つかりませんでした');
+      }
+    } catch (err) {
+      setError('曲の検索に失敗しました');
+    }
+  };
+
+  const generateCommentary = async (artistData: ArtistInfo) => {
+    setIsAnalyzing(true);
+    setActiveTrackId(null);
+    try {
+      const prompt = `
+        You are a world-class music analyst and YouTuber known for deep dives into musicality.
+        Analyze the artist "${artistData.name}" (Genres: ${(artistData.genres || []).join(', ')}).
+        
+        Provide a structured analysis in Japanese.
+        
+        Provide a structured analysis in JSON format:
+        {
+          "summary": "A brief, punchy editorial summary of their musical impact in Japanese.",
+          "keyTraits": [
+            {
+              "title": "Name of a specific musical trait in Japanese (e.g., '幽玄なリバーブ', 'ポリリズムの基礎')",
+              "description": "Explanation of how this sound is achieved and why it's important in Japanese.",
+              "exampleTrack": "A specific track name that exemplifies this trait."
+            }
+          ],
+          "deepDive": "A longer markdown-formatted explanation of their evolution and technical mastery in Japanese. 
+          When you mention a specific track, wrap it in a custom link format like this: [Track Name](track:Track Name). 
+          This will allow the user to click and play it."
+        }
+        
+        Focus on the "actual sound" - what should the listener listen for? Be specific about instruments, production techniques, and vocal styles.
+      `;
+
+      const result = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+        },
+      });
+
+      const data = JSON.parse(result.text || '{}');
+      setCommentary(data);
+    } catch (err) {
+      console.error(err);
+      setError('AI解説の生成に失敗しました');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-orange-500 selection:text-black">
+      {/* Navigation / Header */}
+      <header className="fixed top-0 left-0 right-0 z-50 px-6 py-4 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent backdrop-blur-sm">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center">
+            <Disc className="w-5 h-5 text-black animate-spin-slow" />
+          </div>
+          <span className="font-bold tracking-tighter text-xl uppercase">Sonic Analyst</span>
+        </div>
+        
+        {!spotifyTokens ? (
+          <button 
+            onClick={handleSpotifyLogin}
+            className="flex items-center gap-2 px-4 py-2 bg-green-500 text-black rounded-full font-bold text-sm hover:scale-105 transition-transform"
+          >
+            <LogIn className="w-4 h-4" />
+            Spotifyと連携
+          </button>
+        ) : (
+          <div className="flex items-center gap-4">
+            <form onSubmit={searchArtist} className="relative group">
+              <input 
+                type="text" 
+                placeholder="アーティストを検索..." 
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="bg-white/10 border border-white/20 rounded-full py-2 px-4 pl-10 focus:outline-none focus:ring-2 focus:ring-orange-500 w-48 md:w-64 transition-all group-hover:w-80"
+              />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/50" />
+            </form>
+          </div>
+        )}
+      </header>
+
+      <main className="pt-24 pb-12 px-6 max-w-7xl mx-auto">
+        <AnimatePresence mode="wait">
+          {!artist ? (
+            <motion.div 
+              key="landing"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="flex flex-col items-center justify-center min-h-[70vh] text-center"
+            >
+              <h1 className="text-6xl md:text-8xl font-black tracking-tighter mb-6 uppercase leading-none">
+                音を、<br />
+                <span className="text-orange-500">理解する。</span>
+              </h1>
+              <p className="text-xl text-white/60 max-w-2xl mb-12">
+                お気に入りのアーティストの背後にある技術的な熟練度を解説する、AI搭載の音楽アナライザー。
+                Spotifyと同期して、解説されている「その音」を実際に体験しましょう。
+              </p>
+              
+              {!spotifyTokens && (
+                <button 
+                  onClick={handleSpotifyLogin}
+                  className="px-8 py-4 bg-orange-500 text-black rounded-full font-black text-lg hover:scale-110 transition-transform shadow-[0_0_30px_rgba(249,115,22,0.3)]"
+                >
+                  Spotifyで始める
+                </button>
+              )}
+            </motion.div>
+          ) : (
+            <motion.div 
+              key="artist-view"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="grid grid-cols-1 lg:grid-cols-12 gap-12"
+            >
+              {/* Left Column: Artist Info & Summary */}
+              <div className="lg:col-span-5 space-y-8">
+                <div className="relative aspect-square rounded-2xl overflow-hidden group">
+                  <img 
+                    src={artist.images[0]?.url} 
+                    alt={artist.name}
+                    className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent" />
+                  <div className="absolute bottom-6 left-6">
+                    <h2 className="text-5xl font-black uppercase tracking-tighter leading-none">{artist.name}</h2>
+                    <div className="flex gap-2 mt-2">
+                      {(artist.genres || []).slice(0, 3).map(genre => (
+                        <span key={genre} className="text-[10px] uppercase tracking-widest bg-white/20 px-2 py-1 rounded-full backdrop-blur-md">
+                          {genre}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {isAnalyzing ? (
+                  <div className="flex flex-col items-center justify-center p-12 bg-white/5 rounded-2xl border border-white/10">
+                    <Loader2 className="w-8 h-8 text-orange-500 animate-spin mb-4" />
+                    <p className="text-sm uppercase tracking-widest text-white/50">音楽性を分析中...</p>
+                  </div>
+                ) : commentary && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="space-y-6"
+                  >
+                    <div className="p-6 bg-white/5 rounded-2xl border border-white/10 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 p-4 opacity-10">
+                        <Layers className="w-24 h-24" />
+                      </div>
+                      <h3 className="text-xs uppercase tracking-[0.3em] text-orange-500 font-bold mb-4">エディトリアル・サマリー</h3>
+                      <p className="text-xl font-medium leading-relaxed italic text-white/90">
+                        "{commentary.summary}"
+                      </p>
+                    </div>
+
+                    <div className="space-y-4">
+                      <h3 className="text-xs uppercase tracking-[0.3em] text-white/40 font-bold">サウンドの特徴</h3>
+                      {commentary.keyTraits.map((trait, i) => (
+                        <div 
+                          key={i} 
+                          className="p-4 bg-white/5 rounded-xl border border-white/10 hover:bg-white/10 transition-colors group/trait"
+                        >
+                          <h4 className="font-bold text-lg flex items-center gap-2">
+                            <Sparkles className="w-4 h-4 text-orange-500" />
+                            {trait.title}
+                          </h4>
+                          <p className="text-sm text-white/60 mt-1 leading-relaxed">{trait.description}</p>
+                          {trait.exampleTrack && (
+                            <button 
+                              onClick={() => playTrack(trait.exampleTrack!)}
+                              className="mt-3 flex items-center gap-2 text-[10px] uppercase tracking-widest text-orange-500 font-bold hover:underline"
+                            >
+                              <Play className="w-3 h-3 fill-orange-500" />
+                              例: {trait.exampleTrack}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </div>
+
+              {/* Right Column: Deep Dive & Player */}
+              <div className="lg:col-span-7 space-y-8">
+                {commentary && !isAnalyzing && (
+                  <motion.div 
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="prose prose-invert max-w-none"
+                  >
+                    <div className="p-8 bg-white/5 rounded-3xl border border-white/10 backdrop-blur-xl relative">
+                      <div className="absolute -top-4 -left-4 w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center text-black font-black italic text-xl">
+                        ?
+                      </div>
+                      <h3 className="text-2xl font-black uppercase tracking-tighter mb-6">ディープ・ダイブ</h3>
+                      <div className="text-white/80 leading-relaxed text-lg space-y-4">
+                        <ReactMarkdown
+                          components={{
+                            a: ({ node, ...props }) => {
+                              if (props.href?.startsWith('track:')) {
+                                const trackName = props.href.replace('track:', '');
+                                return (
+                                  <button 
+                                    onClick={() => playTrack(trackName)}
+                                    className="text-orange-500 font-bold hover:underline inline-flex items-center gap-1"
+                                  >
+                                    <Play className="w-3 h-3 fill-orange-500" />
+                                    {props.children}
+                                  </button>
+                                );
+                              }
+                              return <a {...props} />;
+                            }
+                          }}
+                        >
+                          {commentary.deepDive}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                <div className="space-y-4" id="spotify-player">
+                  <h3 className="text-xs uppercase tracking-[0.3em] text-white/40 font-bold">聴いて、確かめる</h3>
+                  <div className="rounded-3xl overflow-hidden border border-white/10 bg-black shadow-2xl">
+                    <iframe 
+                      src={`https://open.spotify.com/embed/${activeTrackId ? 'track/' + activeTrackId : 'artist/' + artist.id}?utm_source=generator&theme=0`} 
+                      width="100%" 
+                      height="380" 
+                      frameBorder="0" 
+                      allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" 
+                      loading="lazy"
+                    />
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </main>
+
+      {/* Error Toast */}
+      <AnimatePresence>
+        {error && (
+          <motion.div 
+            initial={{ opacity: 0, y: 100 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 100 }}
+            className="fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 bg-red-500 text-white rounded-full font-bold shadow-2xl z-[100] flex items-center gap-3"
+          >
+            <Info className="w-5 h-5" />
+            {error}
+            <button onClick={() => setError(null)} className="ml-2 hover:opacity-50">×</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <style>{`
+        @keyframes spin-slow {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        .animate-spin-slow {
+          animation: spin-slow 8s linear infinite;
+        }
+      `}</style>
+    </div>
+  );
+}
