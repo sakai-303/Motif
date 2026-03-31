@@ -205,6 +205,14 @@ export default function App() {
   const [isSdkReady, setIsSdkReady] = useState(false);
   const playerRef = useRef<SpotifyPlayerInstance | null>(null);
   const tokenRef = useRef<string>('');
+  const stopPlaybackTimeoutRef = useRef<number | null>(null);
+
+  const clearStopPlaybackTimeout = useCallback(() => {
+    if (stopPlaybackTimeoutRef.current !== null) {
+      window.clearTimeout(stopPlaybackTimeoutRef.current);
+      stopPlaybackTimeoutRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     tokenRef.current = spotifyTokens?.access_token ?? '';
@@ -212,6 +220,7 @@ export default function App() {
 
   useEffect(() => {
     if (!spotifyTokens) {
+      clearStopPlaybackTimeout();
       playerRef.current?.disconnect();
       playerRef.current = null;
       setSpotifyDeviceId(null);
@@ -286,13 +295,21 @@ export default function App() {
       cancelled = true;
       window.onSpotifyWebPlaybackSDKReady = undefined;
     };
-  }, [spotifyTokens]);
+  }, [spotifyTokens, clearStopPlaybackTimeout]);
 
-  const playTrack = async (trackName: string, startSeconds?: number) => {
+  useEffect(() => {
+    return () => {
+      clearStopPlaybackTimeout();
+    };
+  }, [clearStopPlaybackTimeout]);
+
+  const playTrack = async (trackName: string, startSeconds?: number, durationSeconds?: number) => {
     if (!spotifyTokens || !artist || !spotifyDeviceId || !playerRef.current) {
       setError('Spotifyプレイヤーの準備中です。数秒後にもう一度お試しください。');
       return;
     }
+
+    clearStopPlaybackTimeout();
 
     try {
       // Must run in direct response to the click to satisfy autoplay policy.
@@ -335,6 +352,22 @@ export default function App() {
       );
 
       setCurrentTrackName(track.name);
+
+      if (durationSeconds && durationSeconds > 0) {
+        stopPlaybackTimeoutRef.current = window.setTimeout(() => {
+          void axios
+            .put(
+              'https://api.spotify.com/v1/me/player/pause',
+              {},
+              {
+                params: { device_id: spotifyDeviceId },
+                headers,
+              }
+            )
+            .catch(() => undefined);
+          stopPlaybackTimeoutRef.current = null;
+        }, durationSeconds * 1000);
+      }
     } catch (err: any) {
       if (err.response?.status === 403) {
         setError('Spotify Premiumアカウントが必要です。');
@@ -367,7 +400,7 @@ export default function App() {
           "deepDive": "A longer markdown-formatted explanation of their evolution and technical mastery in Japanese.
           For references to musicality details, wrap the exact phrase the listener should focus on in this link format:
           [phrase in Japanese](cue:Track%20Name?t=MM:SS)
-          Example: [ハイハットの跳ね返り](cue:Track%20Name?t=01:15)
+          Example: [ハイハットの跳ね返り](cue:Track%20Name?t=01:15&d=10)
           IMPORTANT: URL-encode track names (spaces must be %20) so markdown links stay clickable.
           Use 2-4 cue links in total. Keep all cue times realistic and track names specific."
         }
@@ -561,7 +594,7 @@ export default function App() {
                               if (cue) {
                                 return (
                                   <button 
-                                    onClick={() => playTrack(cue.trackName, cue.startSeconds)}
+                                    onClick={() => playTrack(cue.trackName, cue.startSeconds, cue.durationSeconds)}
                                     className="text-orange-500 font-bold hover:underline inline-flex items-center gap-1"
                                   >
                                     <Play className="w-3 h-3 fill-orange-500" />

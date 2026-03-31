@@ -1,6 +1,7 @@
 export interface TrackCue {
   trackName: string;
   startSeconds?: number;
+  durationSeconds?: number;
 }
 
 const TIMECODE_PATTERN = /^(\d{1,2}):([0-5]\d)(?::([0-5]\d))?$/;
@@ -66,10 +67,19 @@ export function parseTrackCueHref(href: string): TrackCue | null {
 
   const params = new URLSearchParams(query);
   const rawTime = params.get('t') ?? params.get('start') ?? '';
+  const rawDuration = params.get('d') ?? params.get('duration') ?? '';
   const parsed = rawTime ? parseTimecodeToSeconds(rawTime) : null;
-  if (parsed === null) {
-    return { trackName };
+  const parsedDuration = rawDuration ? parseTimecodeToSeconds(rawDuration) : null;
+
+  const cue: TrackCue = { trackName };
+
+  if (parsed !== null) {
+    cue.startSeconds = parsed;
   }
 
-  return { trackName, startSeconds: parsed };
+  if (parsedDuration !== null && parsedDuration > 0) {
+    cue.durationSeconds = parsedDuration;
+  }
+
+  return cue;
 }

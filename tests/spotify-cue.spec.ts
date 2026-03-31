@@ -36,10 +36,25 @@ test('parseTrackCueHref parses cue links with seconds and timecode', () => {
     trackName: 'Song C',
     startSeconds: 32,
   });
+  assert.deepEqual(parseTrackCueHref('cue:Song D?t=00:32&d=10'), {
+    trackName: 'Song D',
+    startSeconds: 32,
+    durationSeconds: 10,
+  });
 });
 
 test('parseTrackCueHref falls back to track-only cue when time is invalid', () => {
   assert.deepEqual(parseTrackCueHref('cue:Song C?t=bad'), {
     trackName: 'Song C',
+  });
+});
+
+test('parseTrackCueHref ignores invalid duration values', () => {
+  assert.deepEqual(parseTrackCueHref('cue:Song E?t=00:32&d=bad'), {
+    trackName: 'Song E',
+    startSeconds: 32,
+  });
+  assert.deepEqual(parseTrackCueHref('cue:Song F?d=0'), {
+    trackName: 'Song F',
   });
 });
