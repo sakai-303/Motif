@@ -4,13 +4,14 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, Play, Info, LogIn, Loader2, Disc, Layers, Sparkles } from 'lucide-react';
+import { Search, Play, Info, LogIn, Loader2, Disc, Layers, Sparkles, Volume2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import axios from 'axios';
 import { createLLMProvider } from './lib/llm';
 import { parseTrackCueHref } from './lib/spotifyCue';
 import { buildPlayRequest, buildTransferRequest } from './lib/spotifyPlayback';
+import { clampVolumePercent, toPlayerVolume } from './lib/volumeControl';
 
 const llm = createLLMProvider();
 
@@ -41,6 +42,8 @@ interface SpotifyPlayerInstance {
   connect: () => Promise<boolean>;
   disconnect: () => void;
   activateElement: () => Promise<void>;
+  setVolume: (volume: number) => Promise<void>;
+  getVolume: () => Promise<number>;
   addListener: (event: string, callback: (...args: any[]) => void) => void;
 }
 
@@ -68,6 +71,7 @@ function normalizeDeepDiveMarkdown(value: unknown): string {
 }
 
 export default function App() {
+  const DEFAULT_VOLUME_PERCENT = 80;
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [artist, setArtist] = useState<ArtistInfo | null>(null);
@@ -203,6 +207,7 @@ export default function App() {
   const [currentTrackName, setCurrentTrackName] = useState<string | null>(null);
   const [spotifyDeviceId, setSpotifyDeviceId] = useState<string | null>(null);
   const [isSdkReady, setIsSdkReady] = useState(false);
+  const [volumePercent, setVolumePercent] = useState<number>(DEFAULT_VOLUME_PERCENT);
   const playerRef = useRef<SpotifyPlayerInstance | null>(null);
   const tokenRef = useRef<string>('');
   const stopPlaybackTimeoutRef = useRef<number | null>(null);
@@ -236,7 +241,7 @@ export default function App() {
       const player = new window.Spotify.Player({
         name: 'Sonic Analyst Web Player',
         getOAuthToken: (callback) => callback(tokenRef.current),
-        volume: 0.8,
+        volume: toPlayerVolume(volumePercent),
       });
 
       player.addListener('ready', ({ device_id }: SpotifySdkDeviceReadyEvent) => {
@@ -302,6 +307,32 @@ export default function App() {
       clearStopPlaybackTimeout();
     };
   }, [clearStopPlaybackTimeout]);
+
+  useEffect(() => {
+    if (!isSdkReady || !playerRef.current) return;
+
+    playerRef.current
+      .getVolume()
+      .then((volume) => {
+        setVolumePercent(clampVolumePercent(volume * 100));
+      })
+      .catch(() => undefined);
+  }, [isSdkReady]);
+
+  const handleVolumeChange = async (nextValue: number) => {
+    const nextPercent = clampVolumePercent(nextValue);
+    setVolumePercent(nextPercent);
+
+    if (!playerRef.current) {
+      return;
+    }
+
+    try {
+      await playerRef.current.setVolume(toPlayerVolume(nextPercent));
+    } catch {
+      setError('音量の変更に失敗しました');
+    }
+  };
 
   const playTrack = async (trackName: string, startSeconds?: number, durationSeconds?: number) => {
     if (!spotifyTokens || !artist || !spotifyDeviceId || !playerRef.current) {
@@ -427,11 +458,28 @@ export default function App() {
     <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-orange-500 selection:text-black">
       {/* Navigation / Header */}
       <header className="fixed top-0 left-0 right-0 z-50 px-6 py-4 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent backdrop-blur-sm">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center">
             <Disc className="w-5 h-5 text-black animate-spin-slow" />
           </div>
           <span className="font-bold tracking-tighter text-xl uppercase">Sonic Analyst</span>
+          <div className="flex items-center gap-2 px-3 py-2 rounded-full border border-orange-500/40 bg-black/70">
+            <Volume2 className="w-4 h-4 text-orange-400" />
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={volumePercent}
+              onChange={(e) => void handleVolumeChange(Number(e.target.value))}
+              disabled={!spotifyTokens || !isSdkReady}
+              className="w-20 md:w-28 accent-orange-500 disabled:opacity-40"
+              aria-label="Playback volume"
+            />
+            <span className="text-[10px] font-bold tracking-widest text-orange-300 w-8 text-right">
+              {volumePercent}
+            </span>
+          </div>
         </div>
         
         {!spotifyTokens ? (
