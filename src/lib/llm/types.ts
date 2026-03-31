@@ -7,4 +7,4 @@ export interface LLMProvider {
   generateText(prompt: string, options?: LLMRequestOptions): Promise<string>;
 }
 
-export type LLMProviderName = 'gemini' | 'anthropic' | 'openai';
+export type LLMProviderName = 'gemini' | 'anthropic' | 'openai' | 'mock';

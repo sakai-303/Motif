@@ -1,5 +1,6 @@
 import type { LLMProvider, LLMProviderName } from './types';
 import { GeminiProvider } from './providers/gemini';
+import { MockProvider } from './providers/mock';
 
 export type { LLMProvider, LLMProviderName };
 
@@ -11,11 +12,16 @@ export type { LLMProvider, LLMProviderName };
  *   VITE_LLM_PROVIDER=gemini     VITE_GEMINI_API_KEY=...
  *   VITE_LLM_PROVIDER=anthropic  VITE_ANTHROPIC_API_KEY=...
  *   VITE_LLM_PROVIDER=openai     VITE_OPENAI_API_KEY=...
+ *   VITE_LLM_PROVIDER=mock       VITE_LLM_MOCK_RESPONSE=...
  */
 export function createLLMProvider(): LLMProvider {
   const providerName = (import.meta.env.VITE_LLM_PROVIDER ?? 'gemini') as LLMProviderName;
 
   switch (providerName) {
+    case 'mock': {
+      const mockResponse = import.meta.env.VITE_LLM_MOCK_RESPONSE;
+      return new MockProvider(mockResponse);
+    }
     case 'anthropic': {
       const { AnthropicProvider } = require('./providers/anthropic');
       const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY ?? '';
