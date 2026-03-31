@@ -35,7 +35,7 @@ async function startServer() {
   app.get("/api/auth/spotify/url", (req, res) => {
     const client_id = process.env.SPOTIFY_CLIENT_ID;
     const redirect_uri = `${process.env.APP_URL}/api/auth/spotify/callback`;
-    const scope = "user-read-private user-read-email user-modify-playback-state user-read-playback-state";
+    const scope = "user-read-private user-read-email user-modify-playback-state user-read-playback-state streaming";
 
     const params = new URLSearchParams({
       response_type: "code",

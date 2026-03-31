@@ -4,13 +4,13 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, Music, Play, Info, LogIn, ExternalLink, Loader2, Disc, Layers, Sparkles } from 'lucide-react';
+import { Search, Play, Info, LogIn, Loader2, Disc, Layers, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import axios from 'axios';
-import { cn } from './lib/utils';
 import { createLLMProvider } from './lib/llm';
 import { parseTrackCueHref } from './lib/spotifyCue';
+import { buildPlayRequest, buildTransferRequest } from './lib/spotifyPlayback';
 
 const llm = createLLMProvider();
 
@@ -35,6 +35,30 @@ interface Commentary {
     exampleTrack?: string;
   }[];
   deepDive: string;
+}
+
+interface SpotifyPlayerInstance {
+  connect: () => Promise<boolean>;
+  disconnect: () => void;
+  activateElement: () => Promise<void>;
+  addListener: (event: string, callback: (...args: any[]) => void) => void;
+}
+
+interface SpotifySdkDeviceReadyEvent {
+  device_id: string;
+}
+
+declare global {
+  interface Window {
+    Spotify?: {
+      Player: new (options: {
+        name: string;
+        getOAuthToken: (callback: (token: string) => void) => void;
+        volume?: number;
+      }) => SpotifyPlayerInstance;
+    };
+    onSpotifyWebPlaybackSDKReady?: () => void;
+  }
 }
 
 function normalizeDeepDiveMarkdown(value: unknown): string {
@@ -176,57 +200,153 @@ export default function App() {
     await performArtistSearch(searchQuery);
   };
 
-  const [activeTrackId, setActiveTrackId] = useState<string | null>(null);
-  const [activeTrackStartSeconds, setActiveTrackStartSeconds] = useState<number | null>(null);
+  const [currentTrackName, setCurrentTrackName] = useState<string | null>(null);
+  const [spotifyDeviceId, setSpotifyDeviceId] = useState<string | null>(null);
+  const [isSdkReady, setIsSdkReady] = useState(false);
+  const playerRef = useRef<SpotifyPlayerInstance | null>(null);
+  const tokenRef = useRef<string>('');
 
-  // ... (existing useEffects)
+  useEffect(() => {
+    tokenRef.current = spotifyTokens?.access_token ?? '';
+  }, [spotifyTokens]);
 
-  const playTrack = async (trackName: string, startSeconds?: number) => {
-    if (!spotifyTokens || !artist) return;
-    
-    try {
-      const response = await axios.get(`https://api.spotify.com/v1/search`, {
-        params: { q: `track:${trackName} artist:${artist.name}`, type: 'track', limit: 1 },
-        headers: { Authorization: `Bearer ${spotifyTokens.access_token}` },
+  useEffect(() => {
+    if (!spotifyTokens) {
+      playerRef.current?.disconnect();
+      playerRef.current = null;
+      setSpotifyDeviceId(null);
+      setIsSdkReady(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const initializePlayer = () => {
+      if (cancelled || playerRef.current || !window.Spotify) return;
+
+      const player = new window.Spotify.Player({
+        name: 'Sonic Analyst Web Player',
+        getOAuthToken: (callback) => callback(tokenRef.current),
+        volume: 0.8,
       });
 
-      const track = response.data.tracks.items[0];
-      if (track) {
-        setActiveTrackId(track.id);
-        setActiveTrackStartSeconds(startSeconds ?? null);
+      player.addListener('ready', ({ device_id }: SpotifySdkDeviceReadyEvent) => {
+        if (cancelled) return;
+        setSpotifyDeviceId(device_id);
+        setIsSdkReady(true);
+      });
 
-        // Try targeted playback on the active Spotify device.
-        // If this fails, users can still play via the embed player.
-        try {
-          await axios.put(
-            'https://api.spotify.com/v1/me/player/play',
-            {
-              uris: [track.uri],
-              ...(startSeconds !== undefined ? { position_ms: startSeconds * 1000 } : {}),
-            },
-            {
-              headers: { Authorization: `Bearer ${spotifyTokens.access_token}` },
-            }
-          );
-        } catch {
-          // no-op fallback to embed
-        }
+      player.addListener('not_ready', () => {
+        if (cancelled) return;
+        setIsSdkReady(false);
+      });
 
-        // Scroll to player
-        const playerElement = document.getElementById('spotify-player');
-        playerElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      } else {
-        setError('曲が見つかりませんでした');
+      player.addListener('initialization_error', ({ message }: { message: string }) => {
+        if (cancelled) return;
+        setError(`Spotify SDK 初期化エラー: ${message}`);
+      });
+
+      player.addListener('authentication_error', ({ message }: { message: string }) => {
+        if (cancelled) return;
+        setError(`Spotify認証エラー: ${message}`);
+      });
+
+      player.addListener('account_error', () => {
+        if (cancelled) return;
+        setError('Spotify Premiumアカウントが必要です。');
+      });
+
+      player
+        .connect()
+        .then((connected) => {
+          if (!connected && !cancelled) {
+            setError('Spotifyプレイヤーへの接続に失敗しました');
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setError('Spotifyプレイヤーへの接続に失敗しました');
+          }
+        });
+
+      playerRef.current = player;
+    };
+
+    if (window.Spotify) {
+      initializePlayer();
+    } else {
+      const script = document.createElement('script');
+      script.src = 'https://sdk.scdn.co/spotify-player.js';
+      script.async = true;
+      document.body.appendChild(script);
+      window.onSpotifyWebPlaybackSDKReady = initializePlayer;
+    }
+
+    return () => {
+      cancelled = true;
+      window.onSpotifyWebPlaybackSDKReady = undefined;
+    };
+  }, [spotifyTokens]);
+
+  const playTrack = async (trackName: string, startSeconds?: number) => {
+    if (!spotifyTokens || !artist || !spotifyDeviceId || !playerRef.current) {
+      setError('Spotifyプレイヤーの準備中です。数秒後にもう一度お試しください。');
+      return;
+    }
+
+    try {
+      // Must run in direct response to the click to satisfy autoplay policy.
+      await playerRef.current.activateElement();
+
+      const headers = { Authorization: `Bearer ${spotifyTokens.access_token}` };
+      const artistScopedResponse = await axios.get(`https://api.spotify.com/v1/search`, {
+        params: { q: `track:${trackName} artist:${artist.name}`, type: 'track', limit: 1 },
+        headers,
+      });
+
+      let track = artistScopedResponse.data.tracks.items[0];
+      if (!track) {
+        const fallbackResponse = await axios.get(`https://api.spotify.com/v1/search`, {
+          params: { q: `track:${trackName}`, type: 'track', limit: 1 },
+          headers,
+        });
+        track = fallbackResponse.data.tracks.items[0];
       }
-    } catch (err) {
-      setError('曲の検索に失敗しました');
+      if (!track) {
+        setError('曲が見つかりませんでした');
+        return;
+      }
+
+      await axios.put(
+        'https://api.spotify.com/v1/me/player',
+        buildTransferRequest(spotifyDeviceId),
+        {
+          headers,
+        }
+      );
+
+      await axios.put(
+        'https://api.spotify.com/v1/me/player/play',
+        buildPlayRequest(track.uri, startSeconds),
+        {
+          params: { device_id: spotifyDeviceId },
+          headers,
+        }
+      );
+
+      setCurrentTrackName(track.name);
+    } catch (err: any) {
+      if (err.response?.status === 403) {
+        setError('Spotify Premiumアカウントが必要です。');
+        return;
+      }
+      setError('再生に失敗しました。Spotifyアプリが再生可能か確認してください。');
     }
   };
 
   const generateCommentary = async (artistData: ArtistInfo) => {
     setIsAnalyzing(true);
-    setActiveTrackId(null);
-    setActiveTrackStartSeconds(null);
+    setCurrentTrackName(null);
     try {
       const prompt = `
         You are a world-class music analyst and YouTuber known for deep dives into musicality.
@@ -462,15 +582,16 @@ export default function App() {
 
                 <div className="space-y-4" id="spotify-player">
                   <h3 className="text-xs uppercase tracking-[0.3em] text-white/40 font-bold">聴いて、確かめる</h3>
-                  <div className="rounded-3xl overflow-hidden border border-white/10 bg-black shadow-2xl">
-                    <iframe 
-                      src={`https://open.spotify.com/embed/${activeTrackId ? 'track/' + activeTrackId : 'artist/' + artist.id}?utm_source=generator&theme=0${activeTrackId && activeTrackStartSeconds !== null ? `&start=${activeTrackStartSeconds}&t=${activeTrackStartSeconds}` : ''}`} 
-                      width="100%" 
-                      height="380" 
-                      frameBorder="0" 
-                      allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" 
-                      loading="lazy"
-                    />
+                  <div className="rounded-3xl overflow-hidden border border-white/10 bg-black/60 shadow-2xl p-6 space-y-3">
+                    <p className="text-sm text-white/70">
+                      Web Playback SDK: {isSdkReady ? '接続済み' : '接続中'}
+                    </p>
+                    <p className="text-xs uppercase tracking-[0.2em] text-white/40">
+                      Device ID: {spotifyDeviceId ?? '準備中'}
+                    </p>
+                    <p className="text-base text-white/90">
+                      {currentTrackName ? `再生中: ${currentTrackName}` : 'リンクをクリックするとこのブラウザで即再生します'}
+                    </p>
                   </div>
                 </div>
               </div>
