@@ -6,10 +6,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Search, Music, Play, Info, LogIn, ExternalLink, Loader2, Disc, Layers, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import axios from 'axios';
 import { cn } from './lib/utils';
 import { createLLMProvider } from './lib/llm';
+import { parseTrackCueHref } from './lib/spotifyCue';
 
 const llm = createLLMProvider();
 
@@ -34,6 +35,12 @@ interface Commentary {
     exampleTrack?: string;
   }[];
   deepDive: string;
+}
+
+function normalizeDeepDiveMarkdown(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  if (value.includes('\n')) return value;
+  return value.replace(/\\n/g, '\n');
 }
 
 export default function App() {
@@ -170,10 +177,11 @@ export default function App() {
   };
 
   const [activeTrackId, setActiveTrackId] = useState<string | null>(null);
+  const [activeTrackStartSeconds, setActiveTrackStartSeconds] = useState<number | null>(null);
 
   // ... (existing useEffects)
 
-  const playTrack = async (trackName: string) => {
+  const playTrack = async (trackName: string, startSeconds?: number) => {
     if (!spotifyTokens || !artist) return;
     
     try {
@@ -185,6 +193,25 @@ export default function App() {
       const track = response.data.tracks.items[0];
       if (track) {
         setActiveTrackId(track.id);
+        setActiveTrackStartSeconds(startSeconds ?? null);
+
+        // Try targeted playback on the active Spotify device.
+        // If this fails, users can still play via the embed player.
+        try {
+          await axios.put(
+            'https://api.spotify.com/v1/me/player/play',
+            {
+              uris: [track.uri],
+              ...(startSeconds !== undefined ? { position_ms: startSeconds * 1000 } : {}),
+            },
+            {
+              headers: { Authorization: `Bearer ${spotifyTokens.access_token}` },
+            }
+          );
+        } catch {
+          // no-op fallback to embed
+        }
+
         // Scroll to player
         const playerElement = document.getElementById('spotify-player');
         playerElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -199,6 +226,7 @@ export default function App() {
   const generateCommentary = async (artistData: ArtistInfo) => {
     setIsAnalyzing(true);
     setActiveTrackId(null);
+    setActiveTrackStartSeconds(null);
     try {
       const prompt = `
         You are a world-class music analyst and YouTuber known for deep dives into musicality.
@@ -216,9 +244,12 @@ export default function App() {
               "exampleTrack": "A specific track name that exemplifies this trait."
             }
           ],
-          "deepDive": "A longer markdown-formatted explanation of their evolution and technical mastery in Japanese. 
-          When you mention a specific track, wrap it in a custom link format like this: [Track Name](track:Track Name). 
-          This will allow the user to click and play it."
+          "deepDive": "A longer markdown-formatted explanation of their evolution and technical mastery in Japanese.
+          For references to musicality details, wrap the exact phrase the listener should focus on in this link format:
+          [phrase in Japanese](cue:Track%20Name?t=MM:SS)
+          Example: [ハイハットの跳ね返り](cue:Track%20Name?t=01:15)
+          IMPORTANT: URL-encode track names (spaces must be %20) so markdown links stay clickable.
+          Use 2-4 cue links in total. Keep all cue times realistic and track names specific."
         }
         
         Focus on the "actual sound" - what should the listener listen for? Be specific about instruments, production techniques, and vocal styles.
@@ -227,7 +258,10 @@ export default function App() {
       const text = await llm.generateText(prompt, { jsonMode: true });
 
       const data = JSON.parse(text || '{}');
-      setCommentary(data);
+      setCommentary({
+        ...data,
+        deepDive: normalizeDeepDiveMarkdown(data.deepDive),
+      });
     } catch (err) {
       console.error(err);
       setError('AI解説の生成に失敗しました');
@@ -395,13 +429,19 @@ export default function App() {
                       <h3 className="text-2xl font-black uppercase tracking-tighter mb-6">ディープ・ダイブ</h3>
                       <div className="text-white/80 leading-relaxed text-lg space-y-4">
                         <ReactMarkdown
+                          urlTransform={(url) => {
+                            if (url.startsWith('cue:') || url.startsWith('track:')) {
+                              return url;
+                            }
+                            return defaultUrlTransform(url);
+                          }}
                           components={{
                             a: ({ node, ...props }) => {
-                              if (props.href?.startsWith('track:')) {
-                                const trackName = props.href.replace('track:', '');
+                              const cue = props.href ? parseTrackCueHref(props.href) : null;
+                              if (cue) {
                                 return (
                                   <button 
-                                    onClick={() => playTrack(trackName)}
+                                    onClick={() => playTrack(cue.trackName, cue.startSeconds)}
                                     className="text-orange-500 font-bold hover:underline inline-flex items-center gap-1"
                                   >
                                     <Play className="w-3 h-3 fill-orange-500" />
@@ -424,7 +464,7 @@ export default function App() {
                   <h3 className="text-xs uppercase tracking-[0.3em] text-white/40 font-bold">聴いて、確かめる</h3>
                   <div className="rounded-3xl overflow-hidden border border-white/10 bg-black shadow-2xl">
                     <iframe 
-                      src={`https://open.spotify.com/embed/${activeTrackId ? 'track/' + activeTrackId : 'artist/' + artist.id}?utm_source=generator&theme=0`} 
+                      src={`https://open.spotify.com/embed/${activeTrackId ? 'track/' + activeTrackId : 'artist/' + artist.id}?utm_source=generator&theme=0${activeTrackId && activeTrackStartSeconds !== null ? `&start=${activeTrackStartSeconds}&t=${activeTrackStartSeconds}` : ''}`} 
                       width="100%" 
                       height="380" 
                       frameBorder="0" 
